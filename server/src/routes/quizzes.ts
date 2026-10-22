@@ -375,6 +375,7 @@ router.post('/:id/submit', (req: AuthenticatedRequest, res) => {
         q.verification_status as verificationStatus,
         qsq.marks,
         qsq.negative_marks as negativeMarks,
+        qsq.options_shuffled_json as optionsShuffledJson,
         t.name as topicName,
         qa.numerical_answer as numericalAnswer,
         qa.tolerance_absolute as toleranceAbsolute,
@@ -390,8 +391,26 @@ router.post('/:id/submit', (req: AuthenticatedRequest, res) => {
 
     // Fetch options for questions
     const scoringQuestions: QuestionScoringData[] = questionsData.map(qd => {
-      const options = db.prepare('SELECT option_label, is_correct FROM question_options WHERE question_id = ?').all(qd.questionId) as any[];
-      const correctOptions = options.filter(o => o.is_correct === 1).map(o => o.option_label);
+      let options = db.prepare('SELECT id, option_label, option_text, is_correct FROM question_options WHERE question_id = ? ORDER BY display_order ASC').all(qd.questionId) as any[];
+      
+      const shuffledIds = qd.optionsShuffledJson ? JSON.parse(qd.optionsShuffledJson) : [];
+      if (Array.isArray(shuffledIds) && shuffledIds.length > 0) {
+        const optMap = new Map(options.map(o => [o.id, o]));
+        options = shuffledIds.map((oid: string) => optMap.get(oid)).filter(Boolean);
+      }
+
+      // The label displayed on screen to the user is String.fromCharCode(65 + index)
+      const correctOptions: string[] = [];
+      options.forEach((opt: any, idx: number) => {
+        if (opt.is_correct === 1) {
+          const screenLabel = String.fromCharCode(65 + idx);
+          correctOptions.push(screenLabel);
+          // Also include the original option_label for safety
+          if (opt.option_label && !correctOptions.includes(opt.option_label)) {
+            correctOptions.push(opt.option_label);
+          }
+        }
+      });
 
       let acceptedTextAnswers: string[] = [];
       if (qd.acceptedTextJson) {

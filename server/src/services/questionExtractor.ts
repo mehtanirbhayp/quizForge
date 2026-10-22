@@ -25,32 +25,71 @@ export interface ExtractedQuestion {
 }
 
 export class QuestionExtractor {
+  /**
+   * Main entry point to extract structured questions from extracted pages
+   */
   public static extractQuestions(pages: ExtractedPage[]): ExtractedQuestion[] {
-    const fullText = pages.map(p => `--- PAGE ${p.pageNumber} ---\n` + p.text).join('\n\n');
-    const separateAnswerKeys = this.extractSeparateAnswerKeys(fullText);
+    // 1. Clean watermarks, repetitive course headers, and footers from each page
+    const cleanedPages = pages.map(p => ({
+      pageNumber: p.pageNumber,
+      text: this.cleanPageNoise(p.text)
+    }));
+
+    // Build unified text preserving page indicators
+    const fullText = cleanedPages.map(p => `--- PAGE ${p.pageNumber} ---\n` + p.text).join('\n\n');
+
+    // 2. Extract separate Answer Key section from full text
+    const { keyMap: separateAnswerKeys, keySectionStartIndex } = this.extractSeparateAnswerKeys(fullText);
+
+    // 3. Strip answer key section from text so it does not produce ghost questions
+    let textForQuestions = fullText;
+    if (keySectionStartIndex > 0) {
+      textForQuestions = fullText.substring(0, keySectionStartIndex);
+    }
 
     const questions: ExtractedQuestion[] = [];
 
-    for (const page of pages) {
-      const pageQuestions = this.extractFromPage(page, separateAnswerKeys);
-      questions.push(...pageQuestions);
-    }
-
-    if (questions.length === 0) {
-      const fullDocQuestions = this.extractFromFullText(fullText, separateAnswerKeys);
-      questions.push(...fullDocQuestions);
-    }
+    // Extract questions from combined text to safely handle questions spanning across page boundaries
+    const extracted = this.extractFromUnifiedText(textForQuestions, separateAnswerKeys);
+    questions.push(...extracted);
 
     return questions;
   }
 
-  private static extractSeparateAnswerKeys(text: string): Map<string, string> {
-    const keyMap = new Map<string, string>();
-    const keySectionRegex = /(?:ANSWER\s*KEY|ANSWERS|KEY|SOLUTIONS|ANSWER\s*SHEET)[\s\S]*$/i;
-    const match = text.match(keySectionRegex);
-    if (!match) return keyMap;
+  /**
+   * Clean out watermarks, page numbers, repetitive headers from NPTEL / universities
+   */
+  private static cleanPageNoise(text: string): string {
+    let clean = text;
+    // Page indicators like "1 | P a g e" or "Page 1 of 4"
+    clean = clean.replace(/\d+\s*\|\s*P\s*a\s*g\s*e/gi, '');
+    clean = clean.replace(/Page\s+\d+\s+of\s+\d+/gi, '');
+    clean = clean.replace(/\*{4,}[\s\S]*?\*{4,}/gi, ''); // "****** End of the Page ******"
+    // Repetitive NPTEL / Course certification headers
+    clean = clean.replace(/NPT\s*E\s*L\s*Online\s*Certification\s*Course[\s\S]*?Instructor:\s*Prof\.\s*[A-Za-z\s.]+/gi, '');
+    clean = clean.replace(/Indian\s*Institute\s*of\s*Technology\s*[A-Za-z\s.]+/gi, '');
+    clean = clean.replace(/Course\s*Name\s*:[\s\S]*?Instructor\s*:[\s\S]*?\n/gi, '');
+    return clean;
+  }
 
-    const keySection = match[0];
+  /**
+   * Search for separate answer key section with flexible kerning and headers
+   */
+  private static extractSeparateAnswerKeys(text: string): { keyMap: Map<string, string>; keySectionStartIndex: number } {
+    const keyMap = new Map<string, string>();
+    
+    // Regex matching:
+    // "Answers:", "Answers :", "A nswers:", "A n s w e r s :", "ANSWER KEY", "Correct Answer:", "KEY:", "SOLUTIONS:"
+    const keySectionRegex = /(?:(?:A\s*n\s*s\s*w\s*e\s*r\s*s?|C\s*o\s*r\s*r\s*e\s*c\s*t\s*A\s*n\s*s\s*w\s*e\s*r\s*s?|A\s*N\s*S\s*W\s*E\s*R\s*S?)\s*(?:KEY|SHEET)?|SOLUTIONS?|KEY)\s*[:\n]/i;
+    const match = text.match(keySectionRegex);
+    if (!match || match.index === undefined) {
+      return { keyMap, keySectionStartIndex: -1 };
+    }
+
+    const keySectionStartIndex = match.index;
+    const keySection = text.substring(keySectionStartIndex);
+
+    // Matches e.g. "1. b )", "1. B", "1: A", "Q1: C", "1-A"
     const itemRegex = /(?:Q(?:uestion)?\s*)?(\d{1,3})\s*(?:[.:\-\)]|\s)\s*([A-Da-d]|True|False|TRUE|FALSE|\d+(?:\.\d+)?)/g;
     let itemMatch;
     while ((itemMatch = itemRegex.exec(keySection)) !== null) {
@@ -59,45 +98,16 @@ export class QuestionExtractor {
       keyMap.set(qNum, ans);
     }
 
-    return keyMap;
+    return { keyMap, keySectionStartIndex };
   }
 
-  private static extractFromPage(page: ExtractedPage, separateKeys: Map<string, string>): ExtractedQuestion[] {
+  /**
+   * Parse questions from unified document text
+   */
+  private static extractFromUnifiedText(text: string, separateKeys: Map<string, string>): ExtractedQuestion[] {
     const questions: ExtractedQuestion[] = [];
-    const text = page.text;
-    const cleanText = text.replace(/Page\s+\d+\s+of\s+\d+/gi, '').trim();
 
-    // Matches e.g. "1.", "1)", "Q1.", "Question 1:", "[1]"
-    const questionStartRegex = /(?:^|\n)(?:Q(?:uestion)?\s*(\d{1,3})[.:)]\s*|(\d{1,3})[.)\]\-]\s*|\[(\d{1,3})\]\s*)/gi;
-
-    const matches: { index: number; qNum: string; fullMatch: string }[] = [];
-    let match;
-    while ((match = questionStartRegex.exec(cleanText)) !== null) {
-      const qNum = match[1] || match[2] || match[3];
-      matches.push({
-        index: match.index,
-        qNum,
-        fullMatch: match[0]
-      });
-    }
-
-    for (let i = 0; i < matches.length; i++) {
-      const current = matches[i];
-      const startIndex = current.index + current.fullMatch.length;
-      const endIndex = (i + 1 < matches.length) ? matches[i + 1].index : cleanText.length;
-      
-      const rawBlock = cleanText.substring(startIndex, endIndex).trim();
-      const parsed = this.parseQuestionBlock(rawBlock, current.qNum, page.pageNumber, separateKeys);
-      if (parsed) {
-        questions.push(parsed);
-      }
-    }
-
-    return questions;
-  }
-
-  private static extractFromFullText(text: string, separateKeys: Map<string, string>): ExtractedQuestion[] {
-    const questions: ExtractedQuestion[] = [];
+    // Matches e.g. "1.", "1)", "Q1.", "Question 1:", "Q.1", "[1]"
     const questionStartRegex = /(?:^|\n)(?:Q(?:uestion)?\s*(\d{1,3})[.:)]\s*|(\d{1,3})[.)\]\-]\s*|\[(\d{1,3})\]\s*)/gi;
 
     const matches: { index: number; qNum: string; fullMatch: string }[] = [];
@@ -115,9 +125,19 @@ export class QuestionExtractor {
       const current = matches[i];
       const startIndex = current.index + current.fullMatch.length;
       const endIndex = (i + 1 < matches.length) ? matches[i + 1].index : text.length;
-      
+
+      // Determine source page by scanning backwards for "--- PAGE X ---"
+      const prefixText = text.substring(0, current.index);
+      const pageMatches = prefixText.match(/--- PAGE (\d+) ---/g);
+      let pageNumber = 1;
+      if (pageMatches && pageMatches.length > 0) {
+        const lastPageTag = pageMatches[pageMatches.length - 1];
+        const pNum = lastPageTag.match(/\d+/);
+        if (pNum) pageNumber = parseInt(pNum[0]);
+      }
+
       const rawBlock = text.substring(startIndex, endIndex).trim();
-      const parsed = this.parseQuestionBlock(rawBlock, current.qNum, 1, separateKeys);
+      const parsed = this.parseQuestionBlock(rawBlock, current.qNum, pageNumber, separateKeys);
       if (parsed) {
         questions.push(parsed);
       }
@@ -126,6 +146,9 @@ export class QuestionExtractor {
     return questions;
   }
 
+  /**
+   * Parse question block into question text, options, answer key, and explanation
+   */
   private static parseQuestionBlock(
     block: string,
     qNum: string,
@@ -138,9 +161,10 @@ export class QuestionExtractor {
     const diagramMentions = /(?:refer\s+to\s+(?:the\s+)?(?:diagram|figure|image|circuit|table)|shown\s+in\s+(?:the\s+)?(?:figure|diagram|graph|image)|figure\s*\d+|diagram\s+below)/i;
     const isDiagramBased = diagramMentions.test(block);
 
-    let cleanBlock = block;
+    // Strip any residual page markers
+    let cleanBlock = block.replace(/--- PAGE \d+ ---/g, '').trim();
 
-    // 1. Extract inline explanation first
+    // 1. Extract inline explanation
     let explanation: string | null = null;
     const explanationRegex = /(?:\n|^)(?:Explanation|Solution|Sol|Notes?):\s*([\s\S]*?)(?=(?:\n\s*Q\d|\n\s*Ans:|$))/i;
     const expMatch = cleanBlock.match(explanationRegex);
@@ -149,7 +173,7 @@ export class QuestionExtractor {
       cleanBlock = cleanBlock.replace(expMatch[0], '').trim();
     }
 
-    // 2. Extract inline answer second
+    // 2. Extract inline answer
     let inlineAnswer: string | null = null;
     const inlineAnsRegex = /(?:\n|^)(?:Ans(?:wer)?|Correct\s*Option|Key):\s*\(?([A-Da-d]|True|False|TRUE|FALSE|\d+(?:\.\d+)?)\)?/i;
     const inlineAnsMatch = cleanBlock.match(inlineAnsRegex);
@@ -159,16 +183,13 @@ export class QuestionExtractor {
     }
 
     // 3. Extract options
-    const options: ExtractedOption[] = [];
-    
-    // Pattern 1: (A), (B), (C), (D) or (a), (b), (c), (d)
-    const parenOptionRegex = /(?:\n|\s|^)\(([A-Da-d1-4])\)\s*([\s\S]*?)(?=(?:\s*\([A-Da-d1-4]\)|$))/g;
-    // Pattern 2: A. or A) or a. or a)
-    const dotOptionRegex = /(?:\n|\s|^)([A-Da-d])[.)]\s*([\s\S]*?)(?=(?:\n\s*[A-Da-d][.)]|$))/g;
-
     let optMatches: { label: string; text: string }[] = [];
 
-    // Test paren pattern
+    // Pattern 1: (A), (B), (C), (D) or (a), (b), (c), (d)
+    const parenOptionRegex = /(?:\n|\s|^)\(([A-Da-d1-4])\)\s*([\s\S]*?)(?=(?:\s*\([A-Da-d1-4]\)|$))/g;
+    // Pattern 2: A. or A) or a. or a) or a )
+    const dotOptionRegex = /(?:\n|\s|^)([A-Da-d])[.)]\s*([\s\S]*?)(?=(?:\n\s*[A-Da-d][.)]|$))/g;
+
     const parenFound: { label: string; text: string }[] = [];
     let pMatch;
     while ((pMatch = parenOptionRegex.exec(cleanBlock)) !== null) {
@@ -181,7 +202,6 @@ export class QuestionExtractor {
     if (parenFound.length >= 2) {
       optMatches = parenFound;
     } else {
-      // Test dot pattern
       const dotFound: { label: string; text: string }[] = [];
       let dMatch;
       while ((dMatch = dotOptionRegex.exec(cleanBlock)) !== null) {
@@ -195,11 +215,29 @@ export class QuestionExtractor {
       }
     }
 
+    // Pattern 3: Bare True / False without letter prefixes
+    let isBareTrueFalse = false;
+    if (optMatches.length === 0) {
+      const tfMatch = cleanBlock.match(/(?:^|\n)\s*(True)\s*\n\s*(False)\s*$/i);
+      if (tfMatch) {
+        optMatches = [
+          { label: 'A', text: 'True' },
+          { label: 'B', text: 'False' }
+        ];
+        isBareTrueFalse = true;
+      }
+    }
+
     // Determine question text
     let questionText = cleanBlock;
-    if (optMatches.length > 0) {
+    if (isBareTrueFalse) {
+      const tfIndex = cleanBlock.search(/(?:^|\n)\s*True\s*\n\s*False/i);
+      if (tfIndex > 0) {
+        questionText = cleanBlock.substring(0, tfIndex).trim();
+      }
+    } else if (optMatches.length > 0) {
       const firstOptLabel = optMatches[0].label;
-      const firstOptIndex = cleanBlock.search(new RegExp(`(?:\\(${firstOptLabel}\\)|${firstOptLabel}[.)])`));
+      const firstOptIndex = cleanBlock.search(new RegExp(`(?:\\(${firstOptLabel}\\)|${firstOptLabel}[.)])`, 'i'));
       if (firstOptIndex > 0) {
         questionText = cleanBlock.substring(0, firstOptIndex).trim();
       }
@@ -227,7 +265,9 @@ export class QuestionExtractor {
       }
     }
 
+    const options: ExtractedOption[] = [];
     let hasCorrectAnswer = false;
+
     for (const opt of optMatches) {
       let isCorrect = false;
       if (detectedAnswer) {
@@ -235,7 +275,14 @@ export class QuestionExtractor {
           const parts = detectedAnswer.split(/[,;\s]+/).map(s => s.trim().toUpperCase());
           isCorrect = parts.includes(opt.label);
         } else {
-          isCorrect = opt.label === detectedAnswer || opt.text.toLowerCase() === detectedAnswer.toLowerCase();
+          // Normalize True/False vs A/B
+          if (questionType === 'true_false') {
+            if (detectedAnswer === 'TRUE' && (opt.label === 'A' || opt.text.toUpperCase() === 'TRUE')) isCorrect = true;
+            else if (detectedAnswer === 'FALSE' && (opt.label === 'B' || opt.text.toUpperCase() === 'FALSE')) isCorrect = true;
+            else if (detectedAnswer === opt.label) isCorrect = true;
+          } else {
+            isCorrect = opt.label === detectedAnswer || opt.text.toLowerCase() === detectedAnswer.toLowerCase();
+          }
         }
       }
       if (isCorrect) hasCorrectAnswer = true;
@@ -250,7 +297,7 @@ export class QuestionExtractor {
     let verificationStatus: 'needs_review' | 'verified' | 'incorrect_extraction' | 'missing_answer_key' | 'diagram_required' | 'duplicate' = 'needs_review';
     let confidence = 0.85;
 
-    if (isDiagramBased) {
+    if (isDiagramBased && options.length === 0) {
       verificationStatus = 'diagram_required';
       confidence = 0.75;
     } else if (!detectedAnswer && options.length > 0) {

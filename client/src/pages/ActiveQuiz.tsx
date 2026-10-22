@@ -411,19 +411,50 @@ export const ActiveQuiz: React.FC<ActiveQuizProps> = ({
             </div>
 
             {/* Immediate Practice Mode Feedback Box */}
-            {isImmediate && currentAnswer && (
-              <div className="mt-4 p-4 rounded-2xl bg-indigo-950/30 border border-indigo-500/30 space-y-2 animate-in fade-in duration-150">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Practice Mode Feedback</span>
-                  <span className="text-[11px] text-slate-400">• Source Page {currentQ.source_page}</span>
-                </div>
-                {currentQ.explanation && (
-                  <div className="text-xs text-slate-300 leading-relaxed">
-                    <MathRenderer text={currentQ.explanation} />
+            {isImmediate && currentAnswer && (() => {
+              const correctOpt = (currentQ.options || []).find(o => o.isCorrect === true || Boolean(o.is_correct));
+              const isSelectedCorrect = correctOpt ? (currentAnswer === correctOpt.label) : null;
+              return (
+                <div className={`mt-4 p-4 rounded-2xl border space-y-2.5 animate-in fade-in duration-150 ${
+                  isSelectedCorrect === true
+                    ? 'bg-emerald-950/30 border-emerald-500/40'
+                    : isSelectedCorrect === false
+                    ? 'bg-rose-950/30 border-rose-500/40'
+                    : 'bg-indigo-950/30 border-indigo-500/30'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {isSelectedCorrect === true ? (
+                        <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Correct!
+                        </span>
+                      ) : isSelectedCorrect === false ? (
+                        <span className="flex items-center gap-1.5 text-xs font-bold text-rose-400">
+                          <AlertCircle className="w-4 h-4 text-rose-400" /> Incorrect
+                        </span>
+                      ) : (
+                        <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Practice Mode Feedback</span>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-slate-400">Source Page {currentQ.source_page}</span>
                   </div>
-                )}
-              </div>
-            )}
+
+                  {correctOpt && isSelectedCorrect === false && (
+                    <div className="text-xs font-medium text-slate-200 bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
+                      <span className="text-emerald-400 font-bold mr-1">Correct Answer:</span>
+                      Option {correctOpt.label} — {correctOpt.text}
+                    </div>
+                  )}
+
+                  {currentQ.explanation && (
+                    <div className="text-xs text-slate-300 leading-relaxed pt-1">
+                      <span className="font-semibold text-slate-400 block mb-0.5">Explanation:</span>
+                      <MathRenderer text={currentQ.explanation} />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Question Actions (Clear / Mark for Review) */}
             <div className="flex items-center justify-between pt-4 border-t border-slate-800 text-xs">

@@ -131,8 +131,7 @@ export class QuizScorer {
 
       if (q.questionType === 'single_select' || q.questionType === 'true_false') {
         const selectedOption = String(userVal).trim().toUpperCase();
-        const targetOption = q.correctOptions[0]?.trim().toUpperCase();
-        isCorrect = selectedOption === targetOption;
+        isCorrect = q.correctOptions.some(co => co.trim().toUpperCase() === selectedOption);
       } else if (q.questionType === 'multiple_select') {
         const userArr = (Array.isArray(userVal) ? userVal : [userVal]).map(v => String(v).trim().toUpperCase());
         const targetArr = q.correctOptions.map(v => String(v).trim().toUpperCase());
